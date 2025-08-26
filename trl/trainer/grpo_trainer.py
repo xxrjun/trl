@@ -1380,6 +1380,9 @@ class GRPOTrainer(Trainer):
             prompt_ids, prompt_mask = truncate_with_protected_tokens(
                 prompt_ids, prompt_mask, self.max_prompt_length, protected
             )
+            prompts_text = [
+                re.sub(rf"^({re.escape(self.processing_class.pad_token)})+", "", text) for text in prompts_text
+            ]
 
             prompts_text = self.processing_class.batch_decode(
                 prompt_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
