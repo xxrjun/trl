@@ -742,6 +742,10 @@ class SFTTrainer(Trainer):
         # Decide whether to use completion-only loss: if not specified, then it is set to True if the dataset format
         # is prompt-completion, and False if the dataset format is language modeling.
         dataset_sample = next(iter(train_dataset))
+        logger.info("=========================== Dataset sample")
+        logger.info(f"Dataset sample: {len(dataset_sample)}")
+        logger.info(f"Dataset sample: {dataset_sample}")
+
         if args.completion_only_loss is None:
             self.completion_only_loss = "prompt" in dataset_sample and "completion" in dataset_sample
         else:
@@ -804,9 +808,37 @@ class SFTTrainer(Trainer):
                     "completion-only loss. To resolve this, apply your formatting function before passing the "
                     "dataset, or disable `completion_only_loss` in `SFTConfig`."
                 )
+
+            logger.info("=========================== Before prepare_dataset")
+            logger.info(f"Train dataset: {train_dataset}")
+
             train_dataset = self._prepare_dataset(
                 train_dataset, processing_class, args, args.packing, formatting_func, "train"
             )
+
+            logger.info("=========================== After prepare_dataset")
+            logger.info(f"Train dataset: {train_dataset}")
+
+            # show the bar chart of the length of the input_ids in the train dataset in console
+            try:
+                import matplotlib.pyplot as plt
+
+                lengths = [len(example["input_ids"]) for example in train_dataset]
+                plt.hist(lengths, bins=50)
+                plt.title("Distribution of input_ids lengths in the training dataset")
+                plt.xlabel("Length")
+                plt.ylabel("Frequency")
+
+                # save to a image file
+                plt.savefig(f"tmp/train_dataset_input_ids_lengths_packing{args.packing}.png")
+                print(
+                    f"Saved the input_ids lengths distribution to train_dataset_input_ids_lengths_packing{args.packing}.png"
+                )
+            except ImportError:
+                logger.info("matplotlib is not installed, skipping the plot of input_ids lengths")
+            except Exception as e:
+                print(f"An error occurred while plotting input_ids lengths: {e}")
+
             if eval_dataset is not None:
                 packing = args.packing if args.eval_packing is None else args.eval_packing
                 if isinstance(eval_dataset, dict):
@@ -1028,7 +1060,13 @@ class SFTTrainer(Trainer):
                 dataset = dataset.select_columns(columns)
 
                 # Packing adds new column "seq_lengths" needed for document aware FlashAttention
+                logger.info("=========================== Before pack_dataset")
+                logger.info(f"Dataset: {dataset}")
+                logger.info(f"Dataset columns: {dataset.column_names}")
                 dataset = pack_dataset(dataset, args.max_length, args.packing_strategy, map_kwargs)
+                logger.info("=========================== After pack_dataset")
+                logger.info(f"Dataset: {dataset}")
+                logger.info(f"Dataset columns: {dataset.column_names}")
             elif args.max_length is not None:
                 if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`
                     map_kwargs["desc"] = f"Truncating {dataset_name} dataset"
