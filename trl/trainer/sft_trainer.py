@@ -765,6 +765,11 @@ class SFTTrainer(Trainer):
         # Decide whether to use completion-only loss: if not specified, then it is set to True if the dataset format
         # is prompt-completion, and False if the dataset format is language modeling.
         dataset_sample = next(iter(train_dataset))
+        logger.info("===============================")
+        logger.info("Dataset sample")
+        logger.info("===============================")
+        logger.info(f"Dataset sample: {len(dataset_sample)}")
+        logger.info(f"Dataset sample: {dataset_sample}")
         if args.completion_only_loss is None:
             self.completion_only_loss = "prompt" in dataset_sample and "completion" in dataset_sample
         else:
@@ -827,9 +832,16 @@ class SFTTrainer(Trainer):
                     "completion-only loss. To resolve this, apply your formatting function before passing the "
                     "dataset, or disable `completion_only_loss` in `SFTConfig`."
                 )
+            logger.info("===============================")
+            logger.info("Train dataset (_prepare_dataset)")
+            logger.info("===============================")
+            logger.info(f"Train dataset (before _prepare_dataset): {train_dataset}")
             train_dataset = self._prepare_dataset(
                 train_dataset, processing_class, args, args.packing, formatting_func, "train"
             )
+            logger.info("------------------------------")
+            logger.info(f"Train dataset (after _prepare_dataset): {train_dataset}")
+            logger.info("===============================")
             if eval_dataset is not None:
                 packing = args.packing if args.eval_packing is None else args.eval_packing
                 if isinstance(eval_dataset, dict):
@@ -841,6 +853,24 @@ class SFTTrainer(Trainer):
                     eval_dataset = self._prepare_dataset(
                         eval_dataset, processing_class, args, packing, formatting_func, "eval"
                     )
+        try:
+            import matplotlib.pyplot as plt
+
+            lengths = [len(example["input_ids"]) for example in train_dataset]
+            plt.hist(lengths, bins=50)
+            plt.title("Distribution of input_ids lengths in the training dataset")
+            plt.xlabel("Length")
+            plt.ylabel("Frequency")
+            data_distribution_path = "out/data_distribution"
+            os.makedirs(data_distribution_path, exist_ok=True)
+            plt.savefig(f"{data_distribution_path}/train_dataset_input_ids_lengths_packing-{args.packing}.png")
+            logger.info(
+                f"Saved the input_ids lengths distribution to {data_distribution_path}/train_dataset_input_ids_lengths_packing-{args.packing}.png"
+            )
+        except ImportError:
+            logger.info("matplotlib is not installed, skipping the plot of input_ids lengths")
+        except Exception as e:
+            logger.info(f"An error occurred while plotting input_ids lengths: {e}")
 
         # Loss function
         if args.loss_type == "nll":
@@ -1065,7 +1095,16 @@ class SFTTrainer(Trainer):
                 dataset = dataset.select_columns(columns)
 
                 # Packing adds new column "seq_lengths" needed for document aware FlashAttention
+                logger.info("===============================")
+                logger.info("dataset (pack_dataset)")
+                logger.info("===============================")
+                logger.info(f"Dataset (before packing): {dataset}")
+                logger.info(f"Dataset columns: {dataset.column_names}")
                 dataset = pack_dataset(dataset, args.max_length, args.packing_strategy, map_kwargs)
+                logger.info("------------------------------")
+                logger.info(f"Dataset (after packing): {dataset}")
+                logger.info(f"Dataset columns: {dataset.column_names}")
+                logger.info("===============================")
             elif args.max_length is not None:
                 if isinstance(dataset, Dataset):  # `IterableDataset.map` does not support `desc`
                     map_kwargs["desc"] = f"Truncating {dataset_name} dataset"
