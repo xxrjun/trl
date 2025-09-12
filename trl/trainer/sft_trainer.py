@@ -854,7 +854,7 @@ class SFTTrainer(Trainer):
 
                 # save to a image file
                 data_distribution_path = "out/data_distribution"
-                os.mkdir(data_distribution_path, exist_ok=True)
+                os.makedirs(data_distribution_path, exist_ok=True)
                 plt.savefig(f"{data_distribution_path}/train_dataset_input_ids_lengths_packing{args.packing}.png")
                 logger.info(
                     f"Saved the input_ids lengths distribution to train_dataset_input_ids_lengths_packing{args.packing}.png"
