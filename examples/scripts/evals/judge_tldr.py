@@ -14,8 +14,7 @@
 
 # /// script
 # dependencies = [
-#     "trl @ git+https://github.com/huggingface/trl.git",
-#     "vllm",
+#     "trl[vllm]",
 # ]
 # ///
 

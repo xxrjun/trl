@@ -14,7 +14,7 @@
 
 # /// script
 # dependencies = [
-#     "trl @ git+https://github.com/huggingface/trl.git",
+#     "trl",
 #     "Pillow>=9.4.0",
 #     "peft",
 #     "trackio",
@@ -147,7 +147,7 @@ def main():
     training_args.max_length = None
 
     ################
-    # Model, Tokenizer & Processor
+    # Model
     ################
     dtype = model_args.dtype if model_args.dtype in ["auto", None] else getattr(torch, model_args.dtype)
     model_kwargs = dict(
