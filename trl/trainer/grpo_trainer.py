@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import importlib
 import inspect
 import os
 import textwrap
 from collections import defaultdict, deque
-from contextlib import nullcontext
-from functools import partial
+from contextlib import contextmanager, nullcontext
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
@@ -73,6 +74,18 @@ from .utils import (
     unsplit_pixel_values_by_grid,
 )
 
+
+@lru_cache
+def require_nvtx():
+    """Return the real nvtx module or raise immediately if missing."""
+    try:
+        return importlib.import_module("nvtx")
+    except ModuleNotFoundError as e:
+        raise RuntimeError("NVTX profiling requires the `nvtx` package.\nInstall via: pip install nvtx") from e
+
+
+nvtx = require_nvtx()
+_NVTX_DOMAIN_NAME = "GRPO"
 
 if is_peft_available():
     from peft import PeftConfig, PeftModel
@@ -607,6 +620,30 @@ class GRPOTrainer(BaseTrainer):
                         reward_func, evaluation_mode=True, device_placement=True
                     )
 
+        # NVTX setup (Domain-based, low overhead; no-op if disabled)
+        self._nvtx = nvtx.get_domain(_NVTX_DOMAIN_NAME) if is_nvtx_available() else None
+
+        @contextmanager
+        def _nvtx_range_ctx(
+            owner,
+            message: str,
+            color: str | int | None = None,
+            category: str | int | None = None,
+            payload: int | float | None = None,
+        ):
+            if owner._nvtx is None:
+                yield
+                return
+            attrs = owner._nvtx.get_event_attributes(message=message, color=color, category=category, payload=payload)
+            owner._nvtx.push_range(attrs)
+            try:
+                yield
+            finally:
+                owner._nvtx.pop_range()
+
+        # bind as an instance method
+        self._nvtx_range = _nvtx_range_ctx.__get__(self, GRPOTrainer)
+
     def _set_signature_columns_if_needed(self):
         # If `self.args.remove_unused_columns` is True, non-signature columns are removed.
         # By default, this method sets `self._signature_columns` to the model's expected inputs.
@@ -699,6 +736,7 @@ class GRPOTrainer(BaseTrainer):
             seed=self.args.seed,
         )
 
+    @nvtx.annotate("_get_last_hidden_state", color="purple", domain=_NVTX_DOMAIN_NAME)
     @profiling_decorator
     def _get_last_hidden_state(
         self,
@@ -782,6 +820,7 @@ class GRPOTrainer(BaseTrainer):
         entropy_mask = masked_entropies >= entropy_threshold
         return entropy_mask & mask.bool()  # ensure padding tokens are always masked out
 
+    @nvtx.annotate("get_per_token_logps_and_entropies", color="purple", domain=_NVTX_DOMAIN_NAME)
     @profiling_decorator
     def _get_per_token_logps_and_entropies(
         self,
@@ -903,6 +942,7 @@ class GRPOTrainer(BaseTrainer):
                 llm_model = self.llm.llm_engine.model_executor.driver_worker.model_runner.model
                 llm_model.load_weights([(name, param)])
 
+    @nvtx.annotate("_move_model_to_vllm", color="red", domain=_NVTX_DOMAIN_NAME)
     @profiling_decorator
     def _move_model_to_vllm(self):
         # For DeepSpeed ZeRO-3 and FSDP, we need to gather all parameters before operations
@@ -979,6 +1019,7 @@ class GRPOTrainer(BaseTrainer):
         elif self.vllm_mode == "colocate":
             self.llm.reset_prefix_cache()
 
+    @nvtx.annotate("_prepare_inputs", color="orange", domain=_NVTX_DOMAIN_NAME)
     @profiling_decorator
     def _prepare_inputs(
         self, generation_batch: dict[str, Union[torch.Tensor, Any]]
@@ -1014,6 +1055,7 @@ class GRPOTrainer(BaseTrainer):
             inputs = self._generate_and_score_completions(generation_batch)
         return inputs
 
+    @nvtx.annotate("_calculate_rewards", color="green", domain=_NVTX_DOMAIN_NAME)
     @profiling_decorator
     def _calculate_rewards(self, inputs, prompts, completions, completion_ids_list):
         device = self.accelerator.device
@@ -1030,26 +1072,38 @@ class GRPOTrainer(BaseTrainer):
             zip(self.reward_funcs, self.reward_processing_classes, self.reward_func_names)
         ):
             with profiling_context(self, reward_func_name):
-                if isinstance(reward_func, nn.Module):  # Module (no PretrainedModel) for compat with compiled models
-                    if is_conversational(inputs[0]):
-                        messages = [{"messages": p + c} for p, c in zip(prompts, completions)]
-                        texts = [apply_chat_template(x, reward_processing_class)["text"] for x in messages]
+                with self._nvtx_range(f"{reward_func_name}", color="blue"):
+                    if isinstance(
+                        reward_func, nn.Module
+                    ):  # Module (no PretrainedModel) for compat with compiled models
+                        if is_conversational(inputs[0]):
+                            messages = [{"messages": p + c} for p, c in zip(prompts, completions)]
+                            texts = [apply_chat_template(x, reward_processing_class)["text"] for x in messages]
+                        else:
+                            texts = [p + c for p, c in zip(prompts, completions)]
+                        reward_inputs = reward_processing_class(
+                            text=texts,
+                            return_tensors="pt",
+                            padding=True,
+                            padding_side="right",
+                            add_special_tokens=False,
+                        )
+                        reward_inputs = super()._prepare_inputs(reward_inputs)
+                        with torch.inference_mode():
+                            rewards_per_func[:, i] = reward_func(**reward_inputs).logits[:, 0]  # Shape (B*G,)
                     else:
-                        texts = [p + c for p, c in zip(prompts, completions)]
-                    reward_inputs = reward_processing_class(
-                        text=texts, return_tensors="pt", padding=True, padding_side="right", add_special_tokens=False
-                    )
-                    reward_inputs = super()._prepare_inputs(reward_inputs)
-                    with torch.inference_mode():
-                        rewards_per_func[:, i] = reward_func(**reward_inputs).logits[:, 0]  # Shape (B*G,)
-                else:
-                    output_reward_func = reward_func(
-                        prompts=prompts, completions=completions, completion_ids=completion_ids_list, **reward_kwargs
-                    )
-                    # Convert None values to NaN
-                    output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
+                        output_reward_func = reward_func(
+                            prompts=prompts,
+                            completions=completions,
+                            completion_ids=completion_ids_list,
+                            **reward_kwargs,
+                        )
+                        # Convert None values to NaN
+                        output_reward_func = [
+                            reward if reward is not None else torch.nan for reward in output_reward_func
+                        ]
 
-                    rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
+                        rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
 
         # If all reward functions return None for a given row, issue a detailed warning
         if torch.isnan(rewards_per_func).all(dim=1).any():
@@ -1123,21 +1177,22 @@ class GRPOTrainer(BaseTrainer):
                         ordered_set_of_images = None
 
                     with profiling_context(self, "vLLM.generate"):
-                        output = self.vllm_client.generate(
-                            prompts=ordered_set_of_prompts,
-                            images=ordered_set_of_images,
-                            n=self.num_generations,
-                            repetition_penalty=self.repetition_penalty,
-                            temperature=self.temperature,
-                            top_p=self.top_p,
-                            top_k=-1 if self.top_k is None else self.top_k,
-                            min_p=0.0 if self.min_p is None else self.min_p,
-                            max_tokens=self.max_completion_length,
-                            truncate_prompt_tokens=self.max_prompt_length,
-                            guided_decoding_regex=self.guided_decoding_regex,
-                            generation_kwargs=self.args.generation_kwargs,
-                        )
-                        payload = (output["prompt_ids"], output["completion_ids"], output["logprobs"])
+                        with self._nvtx_range("vLLM.generate", color="green"):
+                            output = self.vllm_client.generate(
+                                prompts=ordered_set_of_prompts,
+                                images=ordered_set_of_images,
+                                n=self.num_generations,
+                                repetition_penalty=self.repetition_penalty,
+                                temperature=self.temperature,
+                                top_p=self.top_p,
+                                top_k=-1 if self.top_k is None else self.top_k,
+                                min_p=0.0 if self.min_p is None else self.min_p,
+                                max_tokens=self.max_completion_length,
+                                truncate_prompt_tokens=self.max_prompt_length,
+                                guided_decoding_regex=self.guided_decoding_regex,
+                                generation_kwargs=self.args.generation_kwargs,
+                            )
+                            payload = (output["prompt_ids"], output["completion_ids"], output["logprobs"])
                 else:
                     payload = None
 
@@ -1207,7 +1262,8 @@ class GRPOTrainer(BaseTrainer):
                     vllm_inputs = all_prompts_text
 
                 with profiling_context(self, "vLLM.generate"):
-                    all_outputs = self.llm.generate(vllm_inputs, sampling_params=sampling_params, use_tqdm=False)
+                    with self._nvtx_range("vLLM.generate", color="green"):
+                        all_outputs = self.llm.generate(vllm_inputs, sampling_params=sampling_params, use_tqdm=False)
 
                 all_prompt_ids = [output.prompt_token_ids for output in all_outputs]
                 all_completion_ids = [output.token_ids for outputs in all_outputs for output in outputs.outputs]
@@ -1638,6 +1694,7 @@ class GRPOTrainer(BaseTrainer):
         self._metrics[mode]["clip_ratio"].append(self.accelerator.gather(clip_ratio).mean().item())
         return loss / self.current_gradient_accumulation_steps
 
+    @nvtx.annotate("compute_loss", color="blue", domain=_NVTX_DOMAIN_NAME)
     @profiling_decorator
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         if return_outputs:
