@@ -621,7 +621,7 @@ class GRPOTrainer(BaseTrainer):
                     )
 
         # NVTX setup (Domain-based, low overhead; no-op if disabled)
-        self._nvtx = nvtx.get_domain(_NVTX_DOMAIN_NAME) if is_nvtx_available() else None
+        self._nvtx = nvtx.get_domain(_NVTX_DOMAIN_NAME)
 
         @contextmanager
         def _nvtx_range_ctx(
