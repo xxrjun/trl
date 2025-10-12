@@ -85,7 +85,7 @@ def require_nvtx():
 
 
 nvtx = require_nvtx()
-_NVTX_DOMAIN_NAME = "GRPO"
+_NVTX_DOMAIN_NAME = "NVTX"
 
 if is_peft_available():
     from peft import PeftConfig, PeftModel
@@ -1055,7 +1055,7 @@ class GRPOTrainer(BaseTrainer):
             inputs = self._generate_and_score_completions(generation_batch)
         return inputs
 
-    @nvtx.annotate("_calculate_rewards", color="green", domain=_NVTX_DOMAIN_NAME)
+    @nvtx.annotate("_calculate_rewards", color="blue", domain=_NVTX_DOMAIN_NAME)
     @profiling_decorator
     def _calculate_rewards(self, inputs, prompts, completions, completion_ids_list):
         device = self.accelerator.device
