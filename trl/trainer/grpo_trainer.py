@@ -1152,7 +1152,8 @@ class GRPOTrainer(BaseTrainer):
             if self.vllm_mode == "colocate" and self.args.vllm_enable_sleep_mode:
                 # wake up colocated vLLM instances if needed
                 torch.cuda.empty_cache()  # required to avoid OOM in some cases
-                self.llm.wake_up()
+                with self._nvtx_range("vLLM.wake_up", color="gold"):
+                    self.llm.wake_up()
 
             # First, update the vLLM weights if needed
             if self.state.global_step != self._last_loaded_step:
