@@ -1235,7 +1235,6 @@ class GRPOTrainer(BaseTrainer):
                         if is_conversational({"prompt": prompts[0]}):
                             all_outputs = self.llm.chat(all_prompts, sampling_params=sampling_params, use_tqdm=False)
                         else:
-                            with self._nvtx_range("vLLM.generate", color="green"):
                             all_outputs = self.llm.generate(all_prompts, sampling_params=sampling_params, use_tqdm=False)
 
                 all_prompt_ids = [output.prompt_token_ids for output in all_outputs]
