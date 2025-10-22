@@ -17,12 +17,18 @@ import subprocess
 
 import pytest
 from transformers import AutoModelForCausalLM
-from transformers.testing_utils import require_torch_multi_accelerator, torch_device
+from transformers.testing_utils import torch_device
 
 from trl.extras.vllm_client import VLLMClient
 from trl.scripts.vllm_serve import chunk_list
 
-from .testing_utils import TrlTestCase, kill_process, require_3_accelerators, require_vllm
+from .testing_utils import (
+    TrlTestCase,
+    kill_process,
+    require_3_accelerators,
+    require_torch_multi_accelerator,
+    require_vllm,
+)
 
 
 class TestChunkList(TrlTestCase):
@@ -134,6 +140,7 @@ class TestVLLMClientServer(TrlTestCase):
 # Same as above but using base_url to instantiate the client.
 @pytest.mark.slow
 @require_torch_multi_accelerator
+@require_vllm
 class TestVLLMClientServerBaseURL(TrlTestCase):
     model_id = "Qwen/Qwen2.5-1.5B"
 
